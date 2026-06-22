@@ -1,91 +1,45 @@
-name: "Check Pull Request for Conflicts"
+name: Create Staging PR
 
 on:
-  push:
-    branches:
-      - master
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [closed]
     branches:
       - master
+
+permissions:
+  contents: read
+  pull-requests: write
 
 jobs:
-  check-for-conflicts:
-    permissions:
-      contents: read
-      pull-requests: write
+  create-staging-pr:
+    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
 
-    env:
-      EVENT_NAME: ${{ github.event_name }}
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
-
-      - name: Authenticate GitHub CLI
-        run: |
-          gh auth status || gh auth login --with-token < <(echo "$GITHUB_TOKEN")
+      - name: Create PR from merged branch to staging
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Ensure jq is installed
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
         run: |
-          sudo apt-get update && sudo apt-get install -y jq
+          echo "Merged branch: $HEAD_BRANCH"
 
-      - name: Check for merge conflicts and manage labels
-        uses: eps1lon/actions-label-merge-conflict@v3
-        id: label-conflicts
-        with:
-          dirtyLabel: "[automated] has conflicts"
-          removeOnDirtyLabel: "Pending for PR Approved,Pending for Nirav,Pending for Rajan,Pending for Sanjay"
-          addOnDirtyLabel: "Work in progress"
-          cleanLabel: ""
-          removeOnCleanLabel: "[automated] has conflicts"
-          repoToken: "${{ secrets.GITHUB_TOKEN }}"
+          # Check if PR already exists
+          PR_NUMBER=$(gh pr list \
+            --head "$HEAD_BRANCH" \
+            --base staging \
+            --state open \
+            --json number \
+            --jq '.[0].number')
 
-      - name: Notify PR creators about conflicts
-        run: |
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            pr_number="${{ github.event.pull_request.number }}"
-            author="${{ github.event.pull_request.user.login }}"
-            echo "Checking mergeable status for PR #$pr_number..."
+          if [ -z "$PR_NUMBER" ]; then
+            PR_URL=$(gh pr create \
+              --head "$HEAD_BRANCH" \
+              --base staging \
+              --title "Merge $HEAD_BRANCH into staging" \
+              --body "This PR was automatically created after the branch was merged into master.")
 
-            attempts=0
-            mergeable_status=$(gh pr view "$pr_number" --json mergeable -q ".mergeable")
-
-            while [[ "$mergeable_status" == "null" && $attempts -lt 5 ]]; do
-              sleep 2
-              mergeable_status=$(gh pr view "$pr_number" --json mergeable -q ".mergeable")
-              attempts=$((attempts + 1))
-            done
-
-            if [[ "$mergeable_status" == "false" ]]; then
-              echo "PR #$pr_number has conflicts, notifying @$author"
-              gh pr comment "$pr_number" --body ":rotating_light: **Merge Conflicts Detected**
-
-            Hi @$author! This pull request has merge conflicts that need to be resolved before it can be merged.
-
-            Please resolve the conflicts and push the changes to update this PR."
-                        else
-                          echo "No conflicts in PR #$pr_number."
-                        fi
-
-          else
-            echo "Push to master detected. Checking all open PRs targeting 'master'..."
-            gh pr list --base master --state open --json number,author,mergeable | jq -r '.[] | select(.mergeable == false) | "\(.number) \(.author.login)"' | while read pr_number author; do
-              echo "Notifying @$author about conflicts in PR #$pr_number"
-              gh pr comment "$pr_number" --body "$(cat <<EOF
-          🚨 **Merge Conflicts Detected**
-
-          Hi @$author! This pull request has merge conflicts that need to be resolved before it can be merged.
-
-          Please resolve the conflicts and push the changes to update this PR.
-          EOF
-          )"
-            done
+            PR_NUMBER=$(basename "$PR_URL")
           fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+          # Add label
+          gh pr edit "$PR_NUMBER" --add-label "ready for testing"
