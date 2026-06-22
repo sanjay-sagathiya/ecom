@@ -2,13 +2,15 @@ name: Create Staging PR
 
 on:
   pull_request:
-    types: [closed]
+    types:
+      - closed
     branches:
       - master
 
 permissions:
   contents: read
   pull-requests: write
+  issues: write
 
 jobs:
   create-staging-pr:
@@ -16,30 +18,53 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Create PR from merged branch to staging
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
-        run: |
-          echo "Merged branch: $HEAD_BRANCH"
+      - name: Create PR to staging
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
 
-          # Check if PR already exists
-          PR_NUMBER=$(gh pr list \
-            --head "$HEAD_BRANCH" \
-            --base staging \
-            --state open \
-            --json number \
-            --jq '.[0].number')
+            const head = context.payload.pull_request.head.ref;
+            const base = "staging";
 
-          if [ -z "$PR_NUMBER" ]; then
-            PR_URL=$(gh pr create \
-              --head "$HEAD_BRANCH" \
-              --base staging \
-              --title "Merge $HEAD_BRANCH into staging" \
-              --body "This PR was automatically created after the branch was merged into master.")
+            console.log(`Creating PR: ${head} -> ${base}`);
 
-            PR_NUMBER=$(basename "$PR_URL")
-          fi
+            // Check if an open PR already exists
+            const { data: existing } = await github.rest.pulls.list({
+              owner,
+              repo,
+              state: "open",
+              head: `${owner}:${head}`,
+              base
+            });
 
-          # Add label
-          gh pr edit "$PR_NUMBER" --add-label "ready for testing"
+            let pr;
+
+            if (existing.length > 0) {
+              console.log(`PR already exists: #${existing[0].number}`);
+              pr = existing[0];
+            } else {
+              const { data: created } = await github.rest.pulls.create({
+                owner,
+                repo,
+                title: `Merge ${head} into staging`,
+                head,
+                base,
+                body: "This PR was automatically created after the branch was merged into `master`."
+              });
+
+              console.log(`Created PR #${created.number}`);
+              pr = created;
+            }
+
+            // Add label
+            await github.rest.issues.addLabels({
+              owner,
+              repo,
+              issue_number: pr.number,
+              labels: ["ready for testing"]
+            });
+
+            console.log(`Label added to PR #${pr.number}`);
