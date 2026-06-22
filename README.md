@@ -5,3 +5,5 @@ Authentication (Laravel Breeze)
 					  php artisan migrate
 					  npm install
 					  npm run dev
+
+Add githib action.
